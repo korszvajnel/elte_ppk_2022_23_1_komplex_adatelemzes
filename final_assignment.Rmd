@@ -1,0 +1,337 @@
+---
+title: "Final Project"
+author: "Vajsz Kornel"
+date: "2023-01-03"
+output:
+  html_document: default
+  pdf_document: default
+---
+    
+# Proper textual explanations, and commented code
+# Exploratory data analysis with useful visualizations
+# Testing of hypothesis by building statistical model(s)
+# Verifying that statistical tests are reliable and valid (e.g. residual diagnostics, assumption checks)
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(pastecs)
+library(psych)
+library(rsample)
+library(purrr)
+library(dplyr)
+library(readr)
+library(forcats)
+library(ggplot2)
+library(stringr)
+library(lmtest)
+library(car)
+library(sjPlot)
+```
+
+# Introduction
+
+In this final project assignment I am exploring the records of Traumatic Brain Injury as presented by Brain Injury Association of America.
+
+```{r}
+tbiAge <- read_csv("https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-03-24/tbi_age.csv")
+tbiMilitary <-read_csv("https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-03-24/tbi_military.csv")
+tbiYear <- read_csv("https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-03-24/tbi_year.csv")
+```
+
+# Preliminary exploration
+
+```{r}
+glimpse(tbiAge)
+glimpse(tbiMilitary)
+glimpse(tbiYear)
+
+lapply(tbiAge, unique)
+lapply(tbiMilitary, unique)
+lapply(tbiYear, unique)
+
+colSums(is.na(tbiAge))
+# Replacing NA with zero values
+tbiAge[is.na(tbiAge)] = 0
+
+colSums(is.na(tbiMilitary))
+# Replacing NA with zero values
+tbiMilitary[is.na(tbiMilitary)] = 0
+
+colSums(is.na(tbiYear))
+# Calculating missing TBI numbers
+tbiYearTotal <- tbiYear %>%
+  filter(injury_mechanism != 'Total') %>%
+  group_by(type, year) %>%
+  summarize(number_est = sum(number_est))
+tbiYear <- left_join(tbiYear, tbiYearTotal, by = c("type","year")) %>%
+  mutate(number_est = ifelse(is.na(number_est.x), number_est.y, number_est.x)) %>%
+  select(-number_est.y, -number_est.x)
+```
+
+The data collected shows a time period from 2006 to 2014. There are three groups of outcome of TBI presented in the data - Emergency Department Visits; Hospitalizations; and Death. The groups of mechanism of injury are Assault; Intentional self-harm; Motor vehicle crashes; Unintentional falls; Unintentionally struck by or against an object; Other unintentional injuries; or Other / no specified injuries.
+
+There age range is grouped for patients with the following granularity groups: 0-4; 5-14; 15-24; 25-34; 35-44; 45-54; 55-64; 65-74; and 75+. There is also a separate grouping which has 0-17 age group that has overlap with the first 3 age groups.
+
+The data has both estimated overall cases reported as well as rates of x/100,000.
+
+There is a separate table for TBI in military context on a 4 level severity scale (Mild; Moderate; Severe; Penetrating). The military personnel are differentiated by service branch (Army; Navy; Air Force; Marines) and component status (Active; Guard; Reserve).
+
+The primary key dimensions for the tables are the following:
+TBI_AGE: age_group, type, injury_mechanism
+TBI_MILITARY: service, component, severity, year
+TBI_YEAR: injury_mechanism, type, year
+
+The measure attributes for the tables are the following:
+TBI_AGE: number_est, rate_est
+TBI_MILITARY: diagnosed
+TBI_YEAR: number_est, rate_est
+
+Each table is in 4NF.
+
+There is no data available for under people under 18 for Intentional self-harm nor for people being admitted to Emergency Department Visit with Intentional self-harm.
+
+The military table shows 0 occurrences of diagnosed TBI as NA. I have corrected it to show as 0.
+
+The year table has the aggregated total estimates of TBI as NA. I have corrected it to show the sum values.
+
+# EDA
+
+```{r}
+stat.desc(tbiAge)
+describe(tbiAge)
+
+stat.desc(tbiMilitary)
+describe(tbiMilitary)
+
+stat.desc(tbiYear)
+describe(tbiYear)
+
+# Filtering TBI Age table in order to get factored age group variables
+tbiAgeFiltered <- tbiAge %>%
+  filter(!age_group %in% c("Total","0-17")) %>% 
+  mutate(age_group = fct_relevel(age_group, c("0-4", "5-14", "15-24", "25-34", "35-44", "45-54", "55-64", "65-74", "75+")),
+         type = fct_relevel(type, c("Emergency Department Visit", "Hospitalizations", "Deaths")))
+
+# Traumatic Brain Injury Estimates by Age Group
+tbiAgeFiltered %>%
+  ggplot(aes(x=age_group, y=number_est)) +
+  geom_col() +
+  xlab("Age Group") +
+  ylab("Number of Estimates") +
+  labs(title = "Traumatic Brain Injury Estimates by Age Group") +
+  scale_y_continuous(labels = scales::comma_format(scale = 1))
+
+# Traumatic Brain Injury Estimates by Injury Type
+tbiAgeFiltered %>%
+  group_by(injury_mechanism) %>%
+  summarize(number_est = sum(number_est,na.rm=TRUE)) %>%
+  mutate(percent = round(100 * number_est / sum(number_est),1))
+
+tbiAgeFiltered$injury_mechanism_wrapped <- str_wrap(tbiAgeFiltered$injury_mechanism, width = 15)
+
+tbiAgeFiltered %>%
+  ggplot(aes(x=injury_mechanism_wrapped, y=number_est)) +
+  geom_col() +
+  xlab("Injury Mechanism") +
+  ylab("Number of Estimates") +
+  labs(title = "Traumatic Brain Injury Estimates by Injury Mechanism") +
+  scale_y_continuous(labels = scales::comma_format(scale = 1)) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size = 7))
+
+# Active military personnel diagnosed TBIs by Service and Severity
+tbiMilitary %>%
+  filter(component == "Active") %>%
+  ggplot(aes(x=year, y=diagnosed, fill=service)) +
+  geom_bar(stat="identity", position="fill") +
+  xlab("Year") +
+  ylab("Number of Estimates") +
+  labs(title = "Active military personnel diagnosed TBIs by Service and Severity") +
+  facet_wrap(~severity, ncol = 2) +
+  scale_x_continuous(breaks = seq(min(tbiMilitary$year), max(tbiMilitary$year), by = 1))
+
+# Guard military personnel diagnosed TBIs by Service and Severity
+tbiMilitary %>%
+  filter(component == "Guard") %>%
+  ggplot(aes(x=year, y=diagnosed, fill=service)) +
+  geom_bar(stat="identity", position="fill") +
+  xlab("Year") +
+  ylab("Number of Estimates") +
+  labs(title = "Guard military personnel diagnosed TBIs by Service and Severity") +
+  facet_wrap(~severity, ncol = 2) +
+  scale_x_continuous(breaks = seq(min(tbiMilitary$year), max(tbiMilitary$year), by = 1))
+
+# Reserve military personnel diagnosed TBIs by Service and Severity
+tbiMilitary %>%
+  filter(component == "Reserve") %>%
+  ggplot(aes(x=year, y=diagnosed, fill=service)) +
+  geom_bar(stat="identity", position="fill") +
+  xlab("Year") +
+  ylab("Number of Estimates") +
+  labs(title = "Reserve military personnel diagnosed TBIs by Service and Severity") +
+  facet_wrap(~severity, ncol = 2) +
+  scale_x_continuous(breaks = seq(min(tbiMilitary$year), max(tbiMilitary$year), by = 1))
+
+# Traumatic Brain Injury Estimates by Outcome Type
+tbiYearAgg <- tbiYear %>%
+  group_by(type) %>%
+  summarize(number_est = sum(number_est)) %>%
+  mutate(percent = round(100 * number_est / sum(number_est),1))
+
+tbiYearAgg %>%
+  ggplot(aes(x="", y=number_est, fill=type)) +
+  geom_bar(width=0.1, stat="identity", position="fill") +
+  coord_polar(theta = "y") +
+  scale_y_continuous(breaks = 1) +
+  xlab("") +
+  ylab("") +
+  labs(title = "Traumatic Brain Injury Estimates by Type",
+       fill = "Type") +
+  scale_fill_discrete(labels = paste(tbiYearAgg$type, " (", tbiYearAgg$percent, "%)"))
+```
+
+The most at-risk group for TBI is 15-24 age group, closely followed by the elderly 75+. The age group 0-4 is also high risk, considering that they are only half the age range other age groups, yet are on a similar level to 5-14 and 25-34 year old group.
+
+The most prevalent cause of injury is coming from Unintentional Falls (48.0%, n=1,380,082). The 2nd and 3rd most frequent are being Unintentionally Struck (15.3%, n=441,415) and Motor Vehicle Crashes (14.0%, n=403,529) respectively. Less frequent, but still relatively significant causes are Assaults (8.1%, n=232,748) and Other unintentional injuries (6.6%, n=189,994). The least frequent cause is Intentional Self-Harm (0.8%, n=22,321). Other and unclassified causes amount to 7.2% of the data (n=206,984).
+
+The most affected group of TBI by far are Army personnel, followed by Marines and a tie between Air Force and Navy. Certain years were more critical to the Marines than others.
+
+During the time frame of 2006-2014, 86.1% of the TBIs resulted in Emergency Department Visits, 11.7% in further Hospitalization, and 2.3% in Death.
+
+# Model
+
+Based on the preliminary EDA, I think meaningful questions can be asked regarding the predictor variables of injury mechanisms andage groups memberships for the rate of occurrences. For this, I'm going to use tbiAgeFiltered table as the base for model creation.
+
+```{r}
+cor(tbiAgeFiltered[sapply(tbiAgeFiltered,is.numeric)])
+
+tbiAgeModel <- lm(rate_est ~ injury_mechanism+type+age_group, data = tbiAgeFiltered)
+summary(tbiAgeModel)
+
+plot(tbiAgeModel)
+
+# Removing outliers #58, #2 and #51
+tbiAgeFilteredNoOutliers <- tbiAgeFiltered %>% slice(-58,-2,-51)
+
+tbiAgeNoOutliersModel <- lm(rate_est ~ injury_mechanism+type+age_group, data = tbiAgeFilteredNoOutliers)
+summary(tbiAgeNoOutliersModel)
+
+plot(tbiAgeNoOutliersModel)
+
+# Removing outliers #118, #2 and #9
+tbiAgeFilteredNoOutliers2nd <- tbiAgeFilteredNoOutliers %>% slice(-118,-2,-9)
+
+tbiAgeNoOutliersModel2nd <- lm(rate_est ~ injury_mechanism+type+age_group, data = tbiAgeFilteredNoOutliers2nd)
+summary(tbiAgeNoOutliersModel2nd)
+
+plot(tbiAgeNoOutliersModel2nd)
+
+# Removing outliers #7, #41 and #14
+tbiAgeFilteredNoOutliers3rd <- tbiAgeFilteredNoOutliers2nd %>% slice(-7,-41,-14)
+
+tbiAgeNoOutliersModel3rd <- lm(rate_est ~ injury_mechanism+type+age_group, data = tbiAgeFilteredNoOutliers3rd)
+summary(tbiAgeNoOutliersModel3rd)
+
+plot(tbiAgeNoOutliersModel3rd)
+
+# Removing outliers #12, #32 and #11
+tbiAgeFilteredNoOutliers4th <- tbiAgeFilteredNoOutliers3rd %>% slice(-12,-32,-11)
+
+tbiAgeNoOutliersModel4th <- lm(rate_est ~ injury_mechanism+type+age_group, data = tbiAgeFilteredNoOutliers4th)
+summary(tbiAgeNoOutliersModel4th)
+
+plot(tbiAgeNoOutliersModel4th)
+
+# Removing outliers #15, #23 and #13
+tbiAgeFilteredNoOutliers5th <- tbiAgeFilteredNoOutliers4th %>% slice(-15,-23,-13)
+
+tbiAgeNoOutliersModel5th <- lm(rate_est ~ injury_mechanism+type+age_group, data = tbiAgeFilteredNoOutliers5th)
+summary(tbiAgeNoOutliersModel5th)
+
+plot(tbiAgeNoOutliersModel5th)
+
+# Removing outliers #100, #18 and #14
+tbiAgeFilteredNoOutliers6th <- tbiAgeFilteredNoOutliers5th %>% slice(-100,-18,-14)
+
+tbiAgeNoOutliersModel6th <- lm(rate_est ~ injury_mechanism+type+age_group, data = tbiAgeFilteredNoOutliers6th)
+summary(tbiAgeNoOutliersModel6th)
+
+plot(tbiAgeNoOutliersModel6th)
+
+# Removing outliers #5, #18 and #14
+tbiAgeFilteredNoOutliers7th <- tbiAgeFilteredNoOutliers6th %>% slice(-5,-18,-14)
+
+tbiAgeNoOutliersModel7th <- lm(rate_est ~ injury_mechanism+type+age_group, data = tbiAgeFilteredNoOutliers7th)
+summary(tbiAgeNoOutliersModel7th)
+
+plot(tbiAgeNoOutliersModel7th)
+
+# Checking normality assumptions
+plot(x = tbiAgeModel, which = 2)
+plot(x = tbiAgeNoOutliersModel, which = 2)
+plot(x = tbiAgeNoOutliersModel2nd, which = 2)
+plot(x = tbiAgeNoOutliersModel3rd, which = 2)
+plot(x = tbiAgeNoOutliersModel4th, which = 2)
+plot(x = tbiAgeNoOutliersModel5th, which = 2)
+plot(x = tbiAgeNoOutliersModel6th, which = 2)
+plot(x = tbiAgeNoOutliersModel7th, which = 2)
+
+# Checking linearity assumptions
+plot(x = tbiAgeModel, which = 1)
+plot(x = tbiAgeNoOutliersModel, which = 1)
+plot(x = tbiAgeNoOutliersModel2nd, which = 1)
+plot(x = tbiAgeNoOutliersModel3rd, which = 1)
+plot(x = tbiAgeNoOutliersModel4th, which = 1)
+plot(x = tbiAgeNoOutliersModel5th, which = 1)
+plot(x = tbiAgeNoOutliersModel6th, which = 1)
+plot(x = tbiAgeNoOutliersModel7th, which = 1)
+
+# Checking homogeneity of variance
+bptest(tbiAgeModel, varformula = NULL, studentize = TRUE, data = list(), weights = NULL)
+bptest(tbiAgeNoOutliersModel, varformula = NULL, studentize = TRUE, data = list(), weights = NULL)
+bptest(tbiAgeNoOutliersModel2nd, varformula = NULL, studentize = TRUE, data = list(), weights = NULL)
+bptest(tbiAgeNoOutliersModel3rd, varformula = NULL, studentize = TRUE, data = list(), weights = NULL)
+bptest(tbiAgeNoOutliersModel4th, varformula = NULL, studentize = TRUE, data = list(), weights = NULL)
+bptest(tbiAgeNoOutliersModel5th, varformula = NULL, studentize = TRUE, data = list(), weights = NULL)
+bptest(tbiAgeNoOutliersModel6th, varformula = NULL, studentize = TRUE, data = list(), weights = NULL)
+bptest(tbiAgeNoOutliersModel7th, varformula = NULL, studentize = TRUE, data = list(), weights = NULL)
+
+# Checking multicollinearity assumptions
+vif(tbiAgeModel)
+vif(tbiAgeNoOutliersModel)
+vif(tbiAgeNoOutliersModel2nd)
+vif(tbiAgeNoOutliersModel3rd)
+vif(tbiAgeNoOutliersModel4th)
+vif(tbiAgeNoOutliersModel5th)
+vif(tbiAgeNoOutliersModel6th)
+vif(tbiAgeNoOutliersModel7th)
+
+# Comparing models
+AIC(tbiAgeModel)
+AIC(tbiAgeNoOutliersModel)
+AIC(tbiAgeNoOutliersModel2nd)
+AIC(tbiAgeNoOutliersModel3rd)
+AIC(tbiAgeNoOutliersModel4th)
+AIC(tbiAgeNoOutliersModel5th)
+AIC(tbiAgeNoOutliersModel6th)
+AIC(tbiAgeNoOutliersModel7th)
+```
+
+The normality, the linearity and the homogeneity of variance do not hold up in either of the models. There are no issues with multicollinearity. The best fit model I got was the one after the 7th iteration of removing outlier rows still wasn't a good fit to identify the risks with high certainty.
+
+# Evaluation
+
+```{r}
+summary(tbiAgeNoOutliersModel7th)
+tab_model(tbiAgeNoOutliersModel7th)
+```
+
+It is confirmed that Intentional Self-Harm (Estimate=-10.78, p=0.011) is among the lowest risk of separately identified mechanism for a TBI. The highest were identified to be Unintentional Falls (Estimate=12.01, p=0.015), and Motor Vehicle Crashes (Estimate=11.46, p=0.009) respectively.
+
+There is a statistical significance of a TBI being admitted to the Emergency Department won't end up in further Hospitalization (Estimate=-32.14, p<0.001) nor Death (Estimate=-38.36, p<0.001).
+
+There is a significant risk for the elderly age group (75+) for having TBI-type injuries (Estimate=11.05, p=0.028).
+
+# Discussion
+
+We've seen we can assess higher risk individuals on a single-dimension basis to identify potential TBI patient groups. The available data set isn't well powered to identify underlying connections between separate age groups or injury mechanisms. Further research is needed to confirm relationships between age groups and exposures to injury risk.
+
